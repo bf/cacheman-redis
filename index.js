@@ -28,6 +28,16 @@ function RedisStore(options, bucket) {
       if (err) throw err;
     });
   }
+  if (options.database) {
+    this.client.select(options.database, function select(err){
+      if (err) throw err;
+    });
+  }
+  if (options.clear_cache_on_connect) {
+    this.clear(function clear(err) {
+      if (err) throw err;
+    });
+  }
 }
 
 /**
@@ -62,8 +72,7 @@ RedisStore.prototype.get = function get(key, fn) {
  * @api public
  */
 
-RedisStore.prototype.set = function set(key, val, ttl, fn) {
-
+RedisStore.prototype.set = RedisStore.prototype.put = function set(key, val, ttl, fn) {
   if ('function' === typeof ttl) {
     fn = ttl;
     ttl = null;
@@ -72,10 +81,16 @@ RedisStore.prototype.set = function set(key, val, ttl, fn) {
   fn = fn || noop;
 
   try {
-    this.client.setex(key, (ttl || 60), JSON.stringify(val), function setter(err) {
+    var callback = function (err) {
       if (err) return fn(err);
       fn(null, val);
-    });
+    }
+
+    if (ttl) {
+      this.client.setex(key, 60, JSON.stringify(val), callback);
+    } else {
+      this.client.set(key, JSON.stringify(val), callback);
+    }
   } catch (e) {
     fn(e);
   }
@@ -103,29 +118,35 @@ RedisStore.prototype.del = function del(key, fn) {
  */
 
 RedisStore.prototype.clear = function clear(key, fn) {
-
   var store = this;
 
   if ('function' === typeof key) {
     fn = key;
-    key = '';
+    key = null;
   }
 
   fn = fn || noop;
   
-  store.client.keys(key + '*', function keys(err, data) {
-    if (err) return fn(err);
-    var count = data.length;
-    data.forEach(function each(key) {
-      store.del(key, function del(err, data) {
-        if (err) {
-          count = 0;
-          return fn(err);
-        }
-        if (--count == 0) {
-          fn(null, null);
-        }
+  if (key) {
+    store.client.keys(key + '*', function keys(err, data) {
+      if (err) return fn(err);
+      var count = data.length;
+      data.forEach(function each(key) {
+        store.del(key, function del(err, data) {
+          if (err) {
+            count = 0;
+            return fn(err);
+          }
+          if (--count == 0) {
+            fn(null, null);
+          }
+        });
       });
     });
-  });
+  } else {
+    store.client.flushall(function (err, didSucceed) {
+      if (err) return fn(err);
+      fn(null, didSucceed);
+    })
+  }
 };
